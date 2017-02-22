@@ -12,7 +12,6 @@ from ivy.std_api import *
 
 IVYAPPNAME = 'eye_tracking_usybus_subscriber'
 
-
 def lprint(fmt, *arg):
     print(IVYAPPNAME + ': ' + fmt % arg)
 
@@ -57,18 +56,22 @@ def on_ub2_msg(agent, *larg):
 
     lprint('UB2 msg : received from %r\n  >UB2 type %s \n  >UB2 data %s  ', agent, usy_type, data_out)
     
-    if usy_type == 'eyetracking:point' :
+    if usy_type == 'eyetracking:gaze' :
+        # export gaze to a csv file. This file can be compared with exported csv file from pupil player
         with  open('gaze_from_ub.csv', 'a') as gaze_from_ub_file :
-            gaze_from_ub_file.write('{},{}\n'.format(floatToString(float(data_out['x'])), floatToString(float(data_out['y']))))
+            gaze_from_ub_file.write('{},{}\n'.format(floatToString(float(data_out['xl'])), floatToString(float(data_out['yl']))))
+
 
 def on_all_msg(agent, *larg):
     lprint('Received from %r: [%s] ', agent, larg[0])
+
 
 '''
 Useful methods
 '''
 def floatToString(inputValue):
     return ('%.17f' % inputValue).rstrip('0').rstrip('.')
+
 
 if __name__ == '__main__':
     # initializing ivybus and isreadymsg

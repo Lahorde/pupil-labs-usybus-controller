@@ -5,6 +5,7 @@ from ivy.std_api import *
 import socket
 import pkg_resources
 import ConfigParser
+import datetime
 
 '''
 Interface with pupillabs eye tracker. 
@@ -14,6 +15,7 @@ https://github.com/pupil-labs/pupil/wiki/Plugin-Guide
 '''
 class PupilUsybusController(Plugin):
     device_id = 'pupil_usybus_controller'   	
+    
     
     def __init__(self, g_pool):
         super(PupilUsybusController, self).__init__(g_pool)
@@ -25,7 +27,7 @@ class PupilUsybusController(Plugin):
         
         self.send_tc = False 
         self.send_gaze = False 
-        self.send_pupil = False 
+        self.pupil_epoch = None
 
         self.app_name = '{}@{}'.format(self.__class__.__name__ , socket.gethostname()) 
 
@@ -54,6 +56,7 @@ class PupilUsybusController(Plugin):
         # is given ; this is performed by IvyStart (C)
         IvyStart(address)
        
+       
     def init_gui(self):
         # initialize the menu
         self.menu = ui.Scrolling_Menu('Usybus controller')
@@ -63,12 +66,13 @@ class PupilUsybusController(Plugin):
         self.menu.append(ui.Button('Reset', self.reset))
         self.menu.append(ui.Switch('send_tc',self,label='Send TC')) 
         self.menu.append(ui.Switch('send_gaze',self,label='Send Gaze')) 
-        self.menu.append(ui.Switch('send_pupil',self,label='Send Pupil')) 
         self.menu.append(ui.Text_Input('device_id',self,setter=PupilUsybusController.set_device_id))
         pass
 
+
     def start_tracking(self):
         pass
+    
     
     def reset(self):
         # TODO check if synchro mechanisms needed
@@ -79,13 +83,16 @@ class PupilUsybusController(Plugin):
     def reset_tracking(self):
         pass
 
+
     def deinit_gui(self):
         if self.menu:
             self.g_pool.gui.remove(self.menu)
             self.menu = None
 
+
     def unset_alive(self):
         self.alive = False
+
 
     def update(self,frame,events):
         # Refer here for data format https://github.com/pupil-labs/pupil/wiki/Data-Format
@@ -98,15 +105,19 @@ class PupilUsybusController(Plugin):
 
             # check if data has already been handled 
             if not pt['timestamp'] in self.last_gaze_tcs :
-                abs_tc = pt['timestamp']
+                system_tc = (datetime.datetime.now() - datetime.datetime(1970, 1, 1, 0, 0)).total_seconds()*1000
+                if self.pupil_epoch is None :
+                    # pupil timestamps are set from PUPIL EPOCH, from https://github.com/pupil-labs/pupil/wiki/Data-Format#pupil-positions
+                    # it is time since last boot, compute it here
+                    # pupil tc in seconds 
+                    self.pupil_epoch = system_tc - pt['timestamp']*1000 
+
+                abs_tc = int(round(pt['timestamp']*1000 + self.pupil_epoch)) 
                 self.last_gaze_tcs.append(pt['timestamp']) 
-                if self.send_gaze :
-                    #send eyes gaze
-                    IvySendMsg("UB2;type=eyetracking:point;from={};tc={};device={};x={};y={}".format(self.app_name, abs_tc, PupilUsybusController.device_id, floatToString(pt['norm_pos'][0]), floatToString(pt['norm_pos'][1])))
                 
                 if self.send_tc and not pt['timestamp'] in self.last_pupils_tcs:
                     #send tc
-                    IvySendMsg("UB2;type=eyetracking:time;from={};tc={};device={}".format(self.app_name, abs_tc,  PupilUsybusController.device_id))
+                    IvySendMsg("UB2;type=eyetracking:time;from={};ts={};device={}".format(self.app_name, abs_tc,  PupilUsybusController.device_id))
                     
                 # get pupils size from base data used to compute gaze positions    
                 base_data = pt['base_data']                  
@@ -130,9 +141,26 @@ class PupilUsybusController(Plugin):
                             gaze_pupils[1] = True
                             right_pup_diam = pupil['diameter']
                             
-                    if self.send_pupil :
-                        #send pupil sizes
-                        IvySendMsg("UB2;type=eyetracking:pupil;from={};tc={};device={};left={};right={}".format(self.app_name, abs_tc, PupilUsybusController.device_id, left_pup_diam, right_pup_diam))
+                    if self.send_gaze :
+                        
+                        # handle data depending on player confidence :
+                        confidence = 1
+                        if pt['confidence'] < self.g_pool.min_data_confidence :
+                            confidence = 0
+                        #send eyes gaze TODO add optional pupil fixation
+                        IvySendMsg("UB2;type=eyetracking:gaze;from={};tc={};device={};xl={};yl={};xr={};yr={};pl={};pr={};vl={};vr={}".format(
+                            self.app_name, 
+                            int(abs_tc), 
+                            PupilUsybusController.device_id,  
+                            floatToString(pt['norm_pos'][0]),
+                            floatToString(pt['norm_pos'][1]),
+                            floatToString(pt['norm_pos'][0]),
+                            floatToString(pt['norm_pos'][1]),
+                            left_pup_diam, 
+                            right_pup_diam,
+                            confidence,
+                            confidence
+                        ))
                     
                 self.pupil_display_list.append((pt['norm_pos'] , pt['confidence'], gaze_pupils))
             
@@ -160,12 +188,14 @@ class PupilUsybusController(Plugin):
                         size=35,
                         color=color)
 
+
     def get_init_dict(self):
         return {}
     
 
     def cleanup(self):
         IvyStop()
+
 
     @staticmethod
     def set_device_id(device_id):   
@@ -180,9 +210,11 @@ class PupilUsybusController(Plugin):
             print('Ivy application {} was connected'.format(agent))
         print('currents Ivy application are [{}]'.format(IvyGetApplicationList()))
 
+
     @staticmethod
     def on_ivy_die(agent, _id):
         print('received the order to die from {} with id = {}'.format(agent, _id))
+        
         
 '''
 Useful methods
