@@ -4,7 +4,7 @@ from pyglui import ui
 from ivy.std_api import *
 import socket
 import pkg_resources
-import ConfigParser
+import configparser
 import datetime
 import ivy
 
@@ -41,7 +41,7 @@ class PupilUsybusController(Plugin):
                 on_die_fct=PupilUsybusController.on_ivy_die)                                               # handler called when a <die> message is received
         
         # read plugin configuration file
-        config = ConfigParser.ConfigParser()
+        config = configparser.ConfigParser()
         config_file = config.read('pupil_usybus_controller.cfg')
         address = ''
 
@@ -50,7 +50,7 @@ class PupilUsybusController(Plugin):
         else :
             try :
                 address = config.get('config', 'address')
-            except ConfigParser.NoOptionError :
+            except configparser.NoOptionError :
                 pass
         
         # starting the bus
