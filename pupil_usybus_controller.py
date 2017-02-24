@@ -6,6 +6,7 @@ import socket
 import pkg_resources
 import ConfigParser
 import datetime
+import ivy
 
 '''
 Interface with pupillabs eye tracker. 
@@ -28,15 +29,16 @@ class PupilUsybusController(Plugin):
         self.send_tc = False 
         self.send_gaze = False 
         self.pupil_epoch = None
-
+        self.confidence = 0.6
+        
         self.app_name = '{}@{}'.format(self.__class__.__name__ , socket.gethostname()) 
 
         # initialising the bus
-        IvyInit(agent_name=self.app_name,                                                                                                       # application name for Ivy
-                ready_msg='UB2;type=usybus;from={};ivy_version={}'.format(self.app_name, pkg_resources.get_distribution('ivy-python').version), # ready_msg
-                main_loop_type_ignored=0,                                                                                                       # main loop is local (ie. using IvyMainloop)
-                on_cnx_fct=PupilUsybusController.on_ivy_conn,                                                                                                    # handler called on connection/disconnection
-                on_die_fct=PupilUsybusController.on_ivy_die)                                                                                                    # handler called when a <die> message is received
+        IvyInit(agent_name=self.app_name,                                                                  # application name for Ivy
+                ready_msg='UB2;type=usybus;from={};ivy_version={}'.format(self.app_name, ivy.__version__), # ready_msg
+                main_loop_type_ignored=0,                                                                  # main loop is local (ie. using IvyMainloop)
+                on_cnx_fct=PupilUsybusController.on_ivy_conn,                                              # handler called on connection/disconnection
+                on_die_fct=PupilUsybusController.on_ivy_die)                                               # handler called when a <die> message is received
         
         # read plugin configuration file
         config = ConfigParser.ConfigParser()
@@ -67,7 +69,7 @@ class PupilUsybusController(Plugin):
         self.menu.append(ui.Switch('send_tc',self,label='Send TC')) 
         self.menu.append(ui.Switch('send_gaze',self,label='Send Gaze')) 
         self.menu.append(ui.Text_Input('device_id',self,setter=PupilUsybusController.set_device_id))
-        pass
+        self.menu.append(ui.Slider('confidence',self,min=0.1,step=0.01,max=1.0,label='Confidence')) 
 
 
     def start_tracking(self):
@@ -93,20 +95,29 @@ class PupilUsybusController(Plugin):
     def unset_alive(self):
         self.alive = False
 
-
-    def update(self,frame,events):
+    def capture_update(self,frame,events):  
+       self.publish_gaze(frame,events, self.g_pool.eyes_are_alive[0].value, self.g_pool.eyes_are_alive[0].value)   
+       
+    def player_update(self,frame,events):
+       self.publish_gaze(frame,events, True, True)   
+       
+    def publish_gaze(self,frame,events, left_eye, right_eye):
         # Refer here for data format https://github.com/pupil-labs/pupil/wiki/Data-Format
         # TODO check data for both eyes
-       
-        # Handle gaze positions
+        
+        '''
+        Handle gaze positions. A given gaze_position refer to right/left eye gaze. To get corresponding eye, base_data must be check.
+        => in order to publish a gaze (both eyes) on UB, several eye gazes must be captured and a left - right eyes gaze must be built
+        from these gaze having different timestamps
+        '''
         for pt in events.get('gaze_positions',[]):
             # Is left pupil ? Is Right pupil? 
             gaze_pupils = [False, False]
 
             # check if data has already been handled 
             if not pt['timestamp'] in self.last_gaze_tcs :
-                system_tc = (datetime.datetime.now() - datetime.datetime(1970, 1, 1, 0, 0)).total_seconds()*1000
                 if self.pupil_epoch is None :
+                    system_tc = (datetime.datetime.now() - datetime.datetime(1970, 1, 1, 0, 0)).total_seconds()*1000
                     # pupil timestamps are set from PUPIL EPOCH, from https://github.com/pupil-labs/pupil/wiki/Data-Format#pupil-positions
                     # it is time since last boot, compute it here
                     # pupil tc in seconds 
@@ -133,6 +144,9 @@ class PupilUsybusController(Plugin):
                             
                     left_pup_diam = 'na' 
                     right_pup_diam = 'na' 
+                    
+                    # TODO remove this check, used to check data as some info are missing in doc
+                    assert len(base_data) == 1, 'it is possible to have several elements in base_data!' 
                     for pupil in base_data : 
                         if pupil['id'] == 0 :
                             gaze_pupils[0] = True
@@ -142,10 +156,9 @@ class PupilUsybusController(Plugin):
                             right_pup_diam = pupil['diameter']
                             
                     if self.send_gaze :
-                        
                         # handle data depending on player confidence :
                         confidence = 1
-                        if pt['confidence'] < self.g_pool.min_data_confidence :
+                        if pt['confidence'] < self.confidence :
                             confidence = 0
                         #send eyes gaze TODO add optional pupil fixation
                         IvySendMsg("UB2;type=eyetracking:gaze;from={};tc={};device={};xl={};yl={};xr={};yr={};pl={};pr={};vl={};vr={}".format(
@@ -169,7 +182,17 @@ class PupilUsybusController(Plugin):
         # is it needed?  
 
         self.pupil_display_list[:-3] = []
-    
+   
+   
+    def update(self,frame,events):
+        # same plugin used for capture and player 
+        if self.g_pool.app == 'capture' :
+            self.capture_update(frame,events)
+        elif self.g_pool.app == 'player' :
+            self.player_update(frame,events)
+        else :
+            assert False, 'plugin must run in pupil player or capture not in {}'.format(self.g_pool.app)
+
 
     def gl_display(self):
         for pt,a,gaze_pup in self.pupil_display_list:
