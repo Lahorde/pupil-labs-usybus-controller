@@ -19,6 +19,6 @@ Subscribed data can be exported to a file `gaze_from_ub.csv` and compared to exp
     TEST OK
 
 # References
-[Pupillabs](https://pupil-labs.com/)
-[Ivybus](http://www.eei.cena.fr/products/ivy/)
-[Pupil data format](https://github.com/pupil-labs/pupil/wiki/Data-Format#pupil-positions)
+* [Pupillabs](https://pupil-labs.com/)
+* [Ivybus](http://www.eei.cena.fr/products/ivy/)
+* [Pupil data format](https://github.com/pupil-labs/pupil/wiki/Data-Format#pupil-positions)
