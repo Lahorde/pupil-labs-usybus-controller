@@ -59,7 +59,8 @@ def on_ub2_msg(agent, *larg):
     if usy_type == 'eyetracking:gaze' :
         # export gaze to a csv file. This file can be compared with exported csv file from pupil player
         with  open('gaze_from_ub.csv', 'a') as gaze_from_ub_file :
-            gaze_from_ub_file.write('{},{}\n'.format(floatToString(float(data_out['xl'])), floatToString(float(data_out['yl']))))
+            # export here needed fields in order to compare with exported player data
+            pass
 
 
 def on_all_msg(agent, *larg):
@@ -109,8 +110,10 @@ if __name__ == '__main__':
     # Note: env variable IVYBUS will be used if no parameter or empty string
     # is given ; this is performed by IvyStart (C)
     IvyStart(sivybus)
-    # binding to every message
+    
+    # bind on UB2 messages, regexp results in 4 backrefs given as parameters in callback  
     IvyBindMsg(on_ub2_msg, 'UB2;type=([^;]+);from=([^;]+)((;[^;]+=[^;]+)*)')
+    # binding to every message
     #IvyBindMsg(on_all_msg, '(.*)')
     
     lprint('%s doing IvyMainLoop', IVYAPPNAME)

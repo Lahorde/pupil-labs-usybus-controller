@@ -3,31 +3,37 @@ from pyglui.cygl.utils import draw_points_norm,RGBA
 from pyglui import ui
 from ivy.std_api import *
 import socket
-import pkg_resources
-import ConfigParser
+import configparser
 import datetime
 import ivy
+import logging
+import collections
 
 '''
 Interface with pupillabs eye tracker. 
 Pupilabs events -> published on Usybus
 For info about pupillabs plugins 
-https://github.com/pupil-labs/pupil/wiki/Plugin-Guide    
+http://docs.pupil-labs.com/#plugins-basics
 '''
 class PupilUsybusController(Plugin):
     device_id = 'pupil_usybus_controller'   	
     
+    # keep last TIMESTAMP_CACHE_LENGTH timestamps, means that gaze at this timestamp has been handled
+    TIMESTAMP_CACHE_LENGTH=10000
+    # this cache is used in player 
     
     def __init__(self, g_pool):
         super(PupilUsybusController, self).__init__(g_pool)
         self.order = .8
         self.pupil_display_list = []
-        # keep last 100 timestamps
-        self.last_gaze_tcs = [] 
-        self.last_pupils_tcs = [] 
+        # dict of surface_name keys with collections of  TIMESTAMP_CACHE_LENGTH timestamp value
+        self.gaze_tcs = {} 
+        # add default surface element
+        self.gaze_tcs[PupilUsybusController.device_id] = collections.deque(maxlen=PupilUsybusController.TIMESTAMP_CACHE_LENGTH)
         
         self.send_tc = False 
-        self.send_gaze = False 
+        self.send_gaze = True 
+        self.out_of_srf_gaze = False 
         self.pupil_epoch = None
         self.confidence = 0.6
         
@@ -41,7 +47,7 @@ class PupilUsybusController(Plugin):
                 on_die_fct=PupilUsybusController.on_ivy_die)                                               # handler called when a <die> message is received
         
         # read plugin configuration file
-        config = ConfigParser.ConfigParser()
+        config = configparser.ConfigParser()
         config_file = config.read('pupil_usybus_controller.cfg')
         address = ''
 
@@ -50,8 +56,12 @@ class PupilUsybusController(Plugin):
         else :
             try :
                 address = config.get('config', 'address')
-            except ConfigParser.NoOptionError :
+            except configparser.NoOptionError :
                 pass
+
+        # Disable info logs. Using logging library raises some exceptions. As 
+        # a workaround, disable it
+        logging.getLogger('Ivy').setLevel(logging.ERROR)
         
         # starting the bus
         # Note: env variable IVYBUS will be used if no parameter or empty string
@@ -68,6 +78,7 @@ class PupilUsybusController(Plugin):
         self.menu.append(ui.Button('Reset', self.reset))
         self.menu.append(ui.Switch('send_tc',self,label='Send TC')) 
         self.menu.append(ui.Switch('send_gaze',self,label='Send Gaze')) 
+        self.menu.append(ui.Switch('out_of_srf_gaze',self,label='Out of surface gaze')) 
         self.menu.append(ui.Text_Input('device_id',self,setter=PupilUsybusController.set_device_id))
         self.menu.append(ui.Slider('confidence',self,min=0.1,step=0.01,max=1.0,label='Confidence')) 
 
@@ -78,118 +89,146 @@ class PupilUsybusController(Plugin):
     
     def reset(self):
         # TODO check if synchro mechanisms needed
-        self.last_gaze_tcs = [] 
-        self.last_pupils_tcs = [] 
-        
-    
+        for srf_timestamp_cache in self.gaze_tcs :
+            self.gaze_tcs[srf_timestamp_cache].clear()
+
     def reset_tracking(self):
         pass
-
-
-    def deinit_gui(self):
-        if self.menu:
-            self.g_pool.gui.remove(self.menu)
-            self.menu = None
 
 
     def unset_alive(self):
         self.alive = False
 
-    def capture_update(self,frame,events):  
-       self.publish_gaze(frame,events, self.g_pool.eyes_are_alive[0].value, self.g_pool.eyes_are_alive[0].value)   
+    def capture_update(self,events):  
+       self.publish_gaze(events, self.g_pool.eyes_are_alive[0].value, self.g_pool.eyes_are_alive[0].value)   
        
-    def player_update(self,frame,events):
-       self.publish_gaze(frame,events, True, True)   
+    def player_update(self,events):
+       self.publish_gaze(events, True, True)   
        
-    def publish_gaze(self,frame,events, left_eye, right_eye):
-        # Refer here for data format https://github.com/pupil-labs/pupil/wiki/Data-Format
-        # TODO check data for both eyes
+    '''
+    Only publish gaze_data associated with a surface
+    '''
+    def publish_gaze(self,events, left_eye, right_eye):
+        # Refer here for data format http://docs.pupil-labs.com/#pupil-data-format 
         
-        '''
-        Handle gaze positions. A given gaze_position refer to right/left eye gaze. To get corresponding eye, base_data must be check.
-        => in order to publish a gaze (both eyes) on UB, several eye gazes must be captured and a left - right eyes gaze must be built
-        from these gaze having different timestamps
-        '''
-        for pt in events.get('gaze_positions',[]):
-            # Is left pupil ? Is Right pupil? 
-            gaze_pupils = [False, False]
-
-            # check if data has already been handled 
-            if not pt['timestamp'] in self.last_gaze_tcs :
-                if self.pupil_epoch is None :
-                    system_tc = (datetime.datetime.now() - datetime.datetime(1970, 1, 1, 0, 0)).total_seconds()*1000
-                    # pupil timestamps are set from PUPIL EPOCH, from https://github.com/pupil-labs/pupil/wiki/Data-Format#pupil-positions
-                    # it is time since last boot, compute it here
-                    # pupil tc in seconds 
-                    self.pupil_epoch = system_tc - pt['timestamp']*1000 
-
-                abs_tc = int(round(pt['timestamp']*1000 + self.pupil_epoch)) 
-                self.last_gaze_tcs.append(pt['timestamp']) 
+        # when iterating over surfaces, add gaze not in defined surfaces, at end, publish
+        # these gaze
+        out_of_srf_cache=[] 
+        for surface_index,pt in enumerate(events.get('surface',[])):
+            # add timestamp cache for this surface
+            if pt['name'] not in self.gaze_tcs :
+                self.gaze_tcs[pt['name']] = collections.deque(maxlen=PupilUsybusController.TIMESTAMP_CACHE_LENGTH)
                 
-                if self.send_tc and not pt['timestamp'] in self.last_pupils_tcs:
-                    #send tc
-                    IvySendMsg("UB2;type=eyetracking:time;from={};ts={};device={}".format(self.app_name, abs_tc,  PupilUsybusController.device_id))
-                    
-                # get pupils size from base data used to compute gaze positions    
-                base_data = pt['base_data']                  
-                if len(base_data) == 0 or len(base_data) > 2:
-                    # TODO - check if it is it possible? 
-                    assert(False)
-                else :
-                    # in all cases timestamp has been added previously
-                    assert(base_data[0]['timestamp'] in self.last_gaze_tcs)
-                    if len(base_data) == 2 :
-                        # TODO is it possible to have different timestamp? 
-                        assert(base_data[0]['timestamp'] == base_data[1]['timestamp'])
+            if self.pupil_epoch is None :
+                system_tc = (datetime.datetime.now() - datetime.datetime(1970, 1, 1, 0, 0)).total_seconds()*1000
+                # pupil timestamps are set from PUPIL EPOCH, from https://github.com/pupil-labs/pupil/wiki/Data-Format#pupil-positions
+                # it is time since last boot, compute it here
+                # pupil tc in seconds 
+                self.pupil_epoch = system_tc - pt['timestamp']*1000 
+                
+            for gaze_index,srf_gaze in enumerate(pt['gaze_on_srf']):
+                abs_tc = int(round(srf_gaze['base_data']['timestamp']*1000 + self.pupil_epoch)) 
+                
+                if abs_tc in self.gaze_tcs[pt['name']] :
+                    # this gaze has already been handled 
+                    break
+                
+                self.gaze_tcs[pt['name']].append(abs_tc)
+                
+                if self.send_gaze :
+                    # handle data depending on player confidence :
+                    confidence = 'true' 
+                    if srf_gaze['confidence'] < self.confidence :
+                        confidence = 'false'
+                        
+                    optional_data='' 
+                    # get right / left eyes optional data
+                    # monocular or binocular eye tracking 
+                    assert(len(srf_gaze['base_data']['base_data']) == 1 or  len(srf_gaze['base_data']['base_data']) == 2)  
+                    for eye_data in srf_gaze['base_data']['base_data'] :
+                        if eye_data['id'] == 0 :
+                            eye = 'left'
+                        elif eye_data['id'] == 1 :
+                            eye = 'right'
+                        else :
+                            assert(False)
+
+                        pupil_confidence = 'true' 
+                        if eye_data['confidence'] < self.confidence :
+                            pupil_confidence = 'false'
+                        optional_data=';x-{0}={1};y-{0}={2};pupil-{0}={3};valid-{0}={4}'.format(
+                            eye, 
+                            floatToString(eye_data['norm_pos'][0]),
+                            floatToString(eye_data['norm_pos'][1]),
+                            floatToString(eye_data['diameter']),
+                            pupil_confidence 
+                        )
                             
-                    left_pup_diam = 'na' 
-                    right_pup_diam = 'na' 
-                    
-                    # TODO remove this check, used to check data as some info are missing in doc
-                    assert len(base_data) == 1, 'it is possible to have several elements in base_data!' 
-                    for pupil in base_data : 
-                        if pupil['id'] == 0 :
-                            gaze_pupils[0] = True
-                            left_pup_diam = pupil['diameter']
-                        elif pupil['id'] == 1 :
-                            gaze_pupils[1] = True
-                            right_pup_diam = pupil['diameter']
-                            
-                    if self.send_gaze :
-                        # handle data depending on player confidence :
-                        confidence = 1
-                        if pt['confidence'] < self.confidence :
-                            confidence = 0
-                        #send eyes gaze TODO add optional pupil fixation
-                        IvySendMsg("UB2;type=eyetracking:gaze;from={};tc={};device={};xl={};yl={};xr={};yr={};pl={};pr={};vl={};vr={}".format(
+                    if srf_gaze['on_srf'] == True:
+                        # remove here gaze with on surface 
+                        if gaze_index in out_of_srf_cache : 
+                            out_of_srf_cache.remove(gaze_index)  
+                       
+                        ivy_msg= "UB2;type=eyetracking:gaze;from={};tc={};device={};surface={};x={};y={};valid={};inside={}{}".format(
                             self.app_name, 
                             int(abs_tc), 
                             PupilUsybusController.device_id,  
-                            floatToString(pt['norm_pos'][0]),
-                            floatToString(pt['norm_pos'][1]),
-                            floatToString(pt['norm_pos'][0]),
-                            floatToString(pt['norm_pos'][1]),
-                            left_pup_diam, 
-                            right_pup_diam,
-                            confidence,
-                            confidence
-                        ))
+                            pt['name'], 
+                            floatToString(srf_gaze['norm_pos'][0]),
+                            floatToString(srf_gaze['norm_pos'][1]),
+                            confidence, 
+                            'true', 
+                            optional_data,
+                        )
+                        IvySendMsg(ivy_msg)
+                
+                    elif self.out_of_srf_gaze :
+                        if surface_index == 0:
+                            #add all gaze out of srf 
+                           out_of_srf_cache.append(gaze_index)  
+                           
+                        if surface_index ==  len(events.get('surface',[])) - 1 :
+                            if gaze_index in out_of_srf_cache :  
+                                ivy_msg= "UB2;type=eyetracking:gaze;from={};tc={};device={};surface={};x={};y={};valid={};inside={}{}".format(
+                                    self.app_name, 
+                                    int(abs_tc), 
+                                    PupilUsybusController.device_id,  
+                                    PupilUsybusController.device_id,  
+                                    floatToString(srf_gaze['norm_pos'][0]),
+                                    floatToString(srf_gaze['norm_pos'][1]),
+                                    confidence, 
+                                    'false', 
+                                    optional_data,
+                                )
+                                IvySendMsg(ivy_msg)
+                            
+                else:
+                    pass
                     
-                self.pupil_display_list.append((pt['norm_pos'] , pt['confidence'], gaze_pupils))
-            
-        # TODO 
-        # check if some additional pupil sizes are in pupil_positions
-        # is it needed?  
+        # Display recent gazes                
+        for pt in events.get('gaze_positions',[]): 
+            # Is left pupil ? Is Right pupil? 
+            gaze_pupils = [False, False]
 
+            base_data = pt['base_data']                  
+            # it is possible to have several elements in base_data! 
+            for pupil in base_data : 
+                if pupil['id'] == 0 :
+                    gaze_pupils[0] = True
+                    left_pup_diam = pupil['diameter']
+                elif pupil['id'] == 1 :
+                    gaze_pupils[1] = True
+            self.pupil_display_list.append((pt['norm_pos'] , pt['confidence'], gaze_pupils))
+            
         self.pupil_display_list[:-3] = []
    
    
-    def update(self,frame,events):
+    def recent_events(self,events):
         # same plugin used for capture and player 
         if self.g_pool.app == 'capture' :
-            self.capture_update(frame,events)
+            self.capture_update(events)
         elif self.g_pool.app == 'player' :
-            self.player_update(frame,events)
+            self.player_update(events)
         else :
             assert False, 'plugin must run in pupil player or capture not in {}'.format(self.g_pool.app)
 
@@ -218,6 +257,13 @@ class PupilUsybusController(Plugin):
 
     def cleanup(self):
         IvyStop()
+        # Workaround to restart later ivy server, if not reset to None, ivy will 
+        # raise an assertion fail on next plugin restart
+        ivy.std_api._IvyServer = None 
+        self.reset() 
+        if self.menu:
+            self.g_pool.gui.remove(self.menu)
+            self.menu = None
 
 
     @staticmethod

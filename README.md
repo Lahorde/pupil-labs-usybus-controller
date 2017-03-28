@@ -11,14 +11,12 @@ This plugin exports pupillabs eye tracking gaze to Ivybus
 
     # Subscribes data published by plugin
     python ./eye_tracking_usybus_subscriber.py
-    
-Subscribed data can be exported to a file `gaze_from_ub.csv` and compared to exported file from pupil player running :    
-
-    ./tests/test_gaze.sh ./Marker_Tracking_Demo_Recording/exports/0-3235/gaze_postions.csv ./gaze_from_ub.csv 10
-    run test on 6 of gaze data
-    TEST OK
 
 # References
 * [Pupillabs](https://pupil-labs.com/)
 * [Ivybus](http://www.eei.cena.fr/products/ivy/)
 * [Pupil data format](https://github.com/pupil-labs/pupil/wiki/Data-Format#pupil-positions)
+    
+## Issues    
+* [surface update in capture](https://github.com/pupil-labs/pupil/issues/683)
+* [surface event in player](https://github.com/pupil-labs/pupil/issues/684) 
